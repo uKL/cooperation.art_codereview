@@ -11,11 +11,13 @@ public class PaymentProcessor {
     private final AccountService accountService;
     private final TransactionRepository transactionRepository;
     private final AuditLogger auditLogger;
+    private final ZellePaymentGateway zellePaymentGateway;
 
-    public PaymentProcessor(AccountService accountService, TransactionRepository transactionRepository, AuditLogger auditLogger) {
+    public PaymentProcessor(AccountService accountService, TransactionRepository transactionRepository, AuditLogger auditLogger, ZellePaymentGateway zellePaymentGateway) {
         this.accountService = accountService;
         this.transactionRepository = transactionRepository;
         this.auditLogger = auditLogger;
+        this.zellePaymentGateway = zellePaymentGateway;
     }
 
     public PaymentResponse processPayment(BasePaymentRequest request) {
@@ -55,6 +57,32 @@ public class PaymentProcessor {
                 auditLogger.logTransaction(transactionId, internalReq.getSourceAccountNumber(), internalReq.getTargetAccountNumber(), internalReq.getAmount(), "INTERNAL");
 
                 return new PaymentResponse(transactionId, PaymentStatus.SUCCESS, "Payment processed successfully");
+            } else if (request.getMethod() == PaymentMethod.ZELLE) {
+                ZellePaymentRequest zelleReq = (ZellePaymentRequest) request;
+                Account source = accountService.getAccount(zelleReq.getSourceAccountNumber());
+                
+                if (source.getBalance().compareTo(zelleReq.getAmount()) < 0) {
+                    throw new InsufficientFundsException("Insufficient funds in account: " + zelleReq.getSourceAccountNumber());
+                }
+
+                // Call external Zelle gateway
+                zellePaymentGateway.sendPayment(zelleReq);
+
+                // Perform local debit
+                accountService.debitAccount(zelleReq.getSourceAccountNumber(), zelleReq.getAmount());
+
+                Transaction tx = new Transaction(
+                    transactionId,
+                    zelleReq.getSourceAccountNumber(),
+                    zelleReq.getRecipientEmail(),
+                    zelleReq.getAmount(),
+                    PaymentStatus.SUCCESS,
+                    PaymentMethod.ZELLE
+                );
+                transactionRepository.save(tx);
+                auditLogger.logTransaction(transactionId, zelleReq.getSourceAccountNumber(), zelleReq.getRecipientEmail(), zelleReq.getAmount(), "ZELLE");
+
+                return new PaymentResponse(transactionId, PaymentStatus.SUCCESS, "Zelle payment processed successfully");
             } else {
                 throw new UnsupportedOperationException("Payment method not supported: " + request.getMethod());
             }

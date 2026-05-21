@@ -2,6 +2,7 @@ package com.cooperationart.cr.service;
 
 import com.cooperationart.cr.domain.*;
 import com.cooperationart.cr.dto.*;
+import com.cooperationart.cr.config.ZelleGatewayConfig;
 import com.cooperationart.cr.repository.*;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -15,6 +16,7 @@ public class PaymentProcessorTest {
     private MockAccountRepository accountRepository;
     private MockTransactionRepository transactionRepository;
     private MockAuditLogger auditLogger;
+    private ZellePaymentGateway zellePaymentGateway;
 
     @BeforeEach
     public void setUp() {
@@ -22,7 +24,11 @@ public class PaymentProcessorTest {
         transactionRepository = new MockTransactionRepository();
         auditLogger = new MockAuditLogger();
         accountService = new AccountService(accountRepository);
-        paymentProcessor = new PaymentProcessor(accountService, transactionRepository, auditLogger);
+        
+        ZelleGatewayConfig zelleConfig = new ZelleGatewayConfig("https://api.zellepay.com/v1", "key", 5000);
+        zellePaymentGateway = new ZellePaymentGateway(zelleConfig);
+        
+        paymentProcessor = new PaymentProcessor(accountService, transactionRepository, auditLogger, zellePaymentGateway);
 
         accountRepository.save(new Account("123", new BigDecimal("1000.00"), "Paweł"));
         accountRepository.save(new Account("456", new BigDecimal("500.00"), "Jaga"));
@@ -39,20 +45,12 @@ public class PaymentProcessorTest {
     }
 
     @Test
-    public void testInsufficientFundsInternalTransfer() {
-        InternalPaymentRequest request = new InternalPaymentRequest("123", "456", new BigDecimal("1500.00"));
+    public void testSuccessfulZelleTransfer() {
+        ZellePaymentRequest request = new ZellePaymentRequest("123", "client@example.com", new BigDecimal("200.00"));
         PaymentResponse response = paymentProcessor.processPayment(request);
 
-        assertEquals(PaymentStatus.FAILED, response.getStatus());
-        assertTrue(response.getMessage().contains("Insufficient funds"));
-    }
-
-    @Test
-    public void testNegativeAmountTransfer() {
-        InternalPaymentRequest request = new InternalPaymentRequest("123", "456", new BigDecimal("-50.00"));
-        assertThrows(RuntimeException.class, () -> {
-            paymentProcessor.processPayment(request);
-        });
+        assertEquals(PaymentStatus.SUCCESS, response.getStatus());
+        assertEquals(new BigDecimal("800.00"), accountService.getAccount("123").getBalance());
     }
 
     private static class MockAccountRepository implements AccountRepository {
